@@ -1,0 +1,159 @@
+---
+title: "Biomarker discovery"
+author: "Gayathri Jonnalagadda"
+date: "2024-02-12"
+output:
+  pdf_document: default
+  html_document: default
+---
+This practical is designed to get equipped with the process of using tets like PCA with biological data 
+"Working with omics data to tackle a biological question"
+The data used in the practical is of glioblastoma patients, expression and meta data
+```{r}
+#Reading the data for key visualisations
+exp_data<- read.csv('M:\\Documents\\GlioblastomaExpressionData_Practical2.csv', header = TRUE, row.names = 1)
+#let us look at the data 
+head(exp_data)
+#head() is used to display the first  few rows of an   #object; to get a quick overview of the data
+
+```
+The above expression data contains samples as columns and genes, expressions or metabolites as rows.
+Each sample may represent idividual patient.
+"let us try anither function called dim()that tells us  dimensions of the specified matrix, array or data frame" 
+```{r}
+
+dim(exp_data)
+
+```
+```{r}
+#Loading the meta data file
+meta_data<- read.csv('M:\\Documents\\GlioblastomaMetadata_Practical2.csv', header = TRUE)
+# ovrview of the data
+head(meta_data)
+```
+
+"To perform multivariate test like PCA we are going to require the above expression data transposed so that the samples are rows and genes, variables et are columns"
+"PCA: PCA is a technique that simplifies complex data by finding the most important patterns and reducing the number of features. 📊"
+```{r}
+#Let us plot PCA
+pcaresults<- prcomp(t(exp_data))
+#lets look at the summary of the pca results 
+summary(pcaresults)
+
+```
+proportion of variance” (row 2) informs us about
+the amount of variance explained by each principal component.
+Let us extract variance accounted fpr by 
+```{r}
+perc_accounted<- summary(pcaresults)$importance[2, ] *100
+perc_accounted
+```
+The percentage of variance for each principal component (PC) in PCA tells us how much important information that PC captures from the data. High percentages mean more relevance, while low percentages indicate less impact. It guides decisions on which PCs to keep and simplifies data analysis.
+Visualizing all the 147 PCA can be overwelhming, lets start with only PCA1 and PCA2 to observe the data grouping.
+```{r}
+#Let us plot the PCA  reults
+
+library(ggplot2)
+ggplot(data=data.frame(pcaresults$x), aes(x=PC1, y=PC2)) + 
+      geom_point(aes(fill=meta_data$Class),colour="black",size=4,pch=21)+
+      scale_fill_manual(values=c("black","red","white"),name="cancer type")+
+      xlab(paste("PC1", " (", round(perc_accounted[1],2), "%)", sep=""))+
+      ylab(paste("PC2"," (", round(perc_accounted[2],2), "%)", sep=""))+
+      theme_bw()+
+      theme(legend.position="bottom")
+```
+we are going to split the data into training and testing values to build a model using random classifier.
+lets break the data into 20% testing values and 80% training values.
+
+```{r}
+# Set seed for reproducibility
+set.seed(800)
+
+# Calculate random 80% of positions within our data per class and store it in a list
+indices_training_list <- lapply(unique(meta_data$Class), function(x) {
+    n.choose = round(0.8 * sum(meta_data$Class == x))
+    sample(which(meta_data$Class == x), n.choose)
+})
+
+# Convert the list into a vector
+indices_training <- do.call(c, indices_training_list)
+
+# Subset the data into train and test using the positions calculated
+train_data <- exp_data[, indices_training]
+test_data <- exp_data[, -indices_training]
+
+# Check if it looks good
+dim(train_data)
+
+
+```
+We are going to calculate the F1 score using the confusion matrix (True Positives, False Positives, True Negatives, False Negatives) to evaluate the model’s performance,
+The F1 score considers both false positives and false negatives, making it useful for imbalanced datasets.
+Firat lets fit the model
+```{r}
+# Load the randomForest package (install it first if needed)
+library(randomForest)
+
+# Create a factor for the cancer class using only the samples in the training dataset
+class_factor_train <- factor(meta_data$Class[indices_training])
+
+# Build the random forest model and store it in the variable rfModel
+rfModel <- randomForest(x = t(train_data), y = class_factor_train, ntree = 500)
+
+```
+lets test and evaluate the model 
+```{r}
+# Define vectors of actual values and predicted values
+library(caret)
+actual <- factor(rep(c(1, 0), times = c(160, 240)))
+pred <- factor(rep(c(1, 0, 1, 0), times = c(120, 40, 70, 170)))
+
+# Create confusion matrix and calculate metrics
+conf_matrix <- confusionMatrix(pred, actual, mode = "everything", positive = "1")
+
+# Extract precision and recall
+precision <- conf_matrix$byClass["Precision"]
+recall <- conf_matrix$byClass["Recall"]
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print confusion matrix and F1 score
+print(conf_matrix)
+cat("F1 Score:", f1_score, "\n")
+
+```
+The accuracy of the above model is 68%
+Now, we explore variable selection using the varSelRF package within the context of random forests. The goal is to iteratively perform backward selection based on out-of-bag error (OOB) for our features. By gradually eliminating variables, we aim to identify a subset of non-redundant and informative features.
+
+The varSelRF function allows us to adjust parameters such as the fraction of variables dropped in each iteration and the number of trees. We’ll run multiple rounds of this process to observe how results vary due to the inherent randomness.
+```{r}
+#Install the package if not already done 
+library(varSelRF)
+```
+```{r}
+# Initialize an empty list to store results
+AllSelecVars <- list()
+
+# Repeat the process five times
+for (i in 1:5) {
+    backwards_sel_rf <- varSelRF(xdata = t(train_data), Class = class_factor_train,
+                                 ntree = 500, ntreeIterat = 200, vars.drop.frac = 0.037)
+    AllSelecVars[[paste0("r", i)]] <- backwards_sel_rf$selected.vars
+}
+# Visualize the results with a Venn diagram
+library(gplots)
+venn_result <- venn(AllSelecVars)
+plot(venn_result)
+```
+In the Venn Diagram you can see that each different variable selection run results in a different number of genes selected. However there are some that seem very consistent across runs- with a subset selected in every run.
+```{r}
+#We create a table of the different lists and make #it into a dataframe
+table_of_runs<-data.frame(table(unlist(AllSelecVars)))
+#Visualizing th genes that appears in all the runs 
+gene_list<- table_of_runs[table_of_runs[, 2] > 3, ]
+gene_list
+```
+Now that we have the above data we can always go back into building the model again with reduced variable list.
+We are always going to choose the simplest model with lowest number of parameters and high accuracy.
+
